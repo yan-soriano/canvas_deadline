@@ -24,12 +24,14 @@ DB_PATH = os.getenv("DB_PATH", "deadlines.db")
 # Пороги напоминаний о дедлайнах (в часах) с допустимым окном
 # threshold_key: (часы_до_дедлайна, мин_окно, макс_окно, иконка, текст)
 DEADLINE_THRESHOLDS = [
-    ("24h", 24, 23, 25,  "📅", "24 часа"),
-    ("12h", 12, 11, 13,  "⚠️", "12 часов"),
-    ("8h",   8,  7,  9,  "⚠️", "8 часов"),
-    ("4h",   4,  3,  5,  "🔔", "4 часа"),
-    ("2h",   2,  1.5, 2.5, "🚨", "2 часа"),
-    ("1h",   1,  0.5, 1.5, "🚨", "1 час"),
+    ("24h", 24, 23.0, 25.0,  "📅", "24 часа"),
+    ("12h", 12, 11.0, 13.0,  "⚠️", "12 часов"),
+    ("8h",   8,  7.0,  9.0,  "⚠️", "8 часов"),
+    ("6h",   6,  5.5,  6.5,  "🔔", "6 часов"),
+    ("5h",   5,  4.5,  5.5,  "🔔", "5 часов"),
+    ("4h",   4,  3.5,  4.5,  "🔔", "4 часа"),
+    ("2h",   2,  1.5,  2.5,  "🚨", "2 часа"),
+    ("1h",   1,  0.5,  1.5,  "🚨", "1 час"),
 ]
 
 # ────────────────────────────────────────────────
@@ -650,12 +652,12 @@ async def cmd_settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton(f"{'✅' if ng else '❌'} Оценки", callback_data="tog_ng")],
         [InlineKeyboardButton(f"{'✅' if nna else '❌'} Новые задания", callback_data="tog_nna")],
         [InlineKeyboardButton("── Дедлайны: когда напоминать ──", callback_data="noop")],
-        [InlineKeyboardButton("24ч · 12ч · 8ч · 4ч · 2ч · 1ч", callback_data="noop")],
+        [InlineKeyboardButton("24ч · 12ч · 8ч · 6ч · 5ч · 4ч · 2ч · 1ч", callback_data="noop")],
     ]
     await update.message.reply_text(
         "⚙️ *Настройки уведомлений*\n\n"
         "Напоминания о дедлайне приходят за:\n"
-        "24ч → 12ч → 8ч → 4ч → 2ч → 1ч\n\n"
+        "24ч → 12ч → 8ч → 6ч → 5ч → 4ч → 2ч → 1ч\n\n"
         "_Если работа уже сдана — напоминания не приходят_ ✅",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
@@ -693,7 +695,7 @@ async def handle_toggle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton(f"{'✅' if ng else '❌'} Оценки", callback_data="tog_ng")],
         [InlineKeyboardButton(f"{'✅' if nna else '❌'} Новые задания", callback_data="tog_nna")],
         [InlineKeyboardButton("── Дедлайны: когда напоминать ──", callback_data="noop")],
-        [InlineKeyboardButton("24ч · 12ч · 8ч · 4ч · 2ч · 1ч", callback_data="noop")],
+        [InlineKeyboardButton("24ч · 12ч · 8ч · 6ч · 5ч · 4ч · 2ч · 1ч", callback_data="noop")],
     ]
     await q.edit_message_reply_markup(InlineKeyboardMarkup(kb))
 
@@ -729,7 +731,7 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"*Уведомления:*\n"
                 f"🆕 Новые задания\n"
                 f"📊 Новые оценки\n"
-                f"⏰ Дедлайны за 24ч/12ч/8ч/4ч/2ч/1ч\n"
+                f"⏰ Дедлайны за 24ч/12ч/8ч/6ч/5ч/4ч/2ч/1ч\n"
                 f"✅ Сданные работы — без напоминаний",
                 parse_mode="Markdown")
             # Отправляем отдельное сообщение с клавиатурой
@@ -763,11 +765,22 @@ async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ────────────────────────────────────────────────
 # MAIN
 # ────────────────────────────────────────────────
+async def post_init(app: Application):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        check_and_notify,
+        "interval", minutes=CHECK_INTERVAL_MINUTES,
+        args=[app],
+        next_run_time=datetime.now() + timedelta(seconds=30)
+    )
+    scheduler.start()
+    logger.info(f"Scheduler started with interval: {CHECK_INTERVAL_MINUTES} min")
+
 def main():
     init_db()
     _migrate_db()
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     for cmd, fn in [("start", cmd_start), ("deadlines", cmd_deadlines),
                     ("grades", cmd_grades), ("settings", cmd_settings),
                     ("seturl", cmd_seturl), ("reconnect", cmd_reconnect),
@@ -776,17 +789,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_toggle))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    scheduler = AsyncIOScheduler()
-
-    async def run_check():
-        await check_and_notify(app)
-
-    scheduler.add_job(
-        lambda: app.create_task(run_check()),
-        "interval", minutes=CHECK_INTERVAL_MINUTES,
-        next_run_time=datetime.now() + timedelta(seconds=30))  # первый запуск через 30с
-    scheduler.start()
-    logger.info(f"Bot started. Check interval: {CHECK_INTERVAL_MINUTES} min")
+    logger.info(f"Bot started.")
     app.run_polling()
 
 if __name__ == "__main__":
